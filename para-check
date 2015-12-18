@@ -1,0 +1,90 @@
+#!/bin/bash
+# This is a test script to check the parameter file parsing
+
+# check the argument
+if [ $# -eq 0 ]
+then
+   echo "Usage: $0 parameter_file "
+   exit 1
+fi
+
+#check the parameter file
+if [ ! -f $1 ]
+then
+   echo "$1 doesn't exist. "
+   exit 1
+fi
+
+
+echo "Read parameter file: "
+
+INFILE_1="";
+INFILE_2="";
+RESULT_DIR="";
+FILENAME="";
+
+while read LINE; do
+    FIRST_CHAR=${LINE:0:1}
+    if [ ! $FIRST_CHAR == "#" ]
+    then
+       VARNAME=${LINE%=*}
+
+       case "$VARNAME" in
+          "INFILE_1")
+          INFILE_1=${LINE##*=}
+          ;;
+          "INFILE_2")
+          INFILE_2=${LINE##*=}
+          ;;
+          "RESULT_DIR")
+          RESULT_DIR=${LINE##*=}
+          ;;
+          "FILENAME")
+          FILENAME=${LINE##*=}
+          ;;
+       esac
+    fi
+done < $1
+
+# check FILENAME
+if [ "$FILENAME" == "" ]
+then
+   echo "FILENAME can't be empty "
+   exit 1
+fi
+
+# check RESULT_DIR exist or not
+# if [ -d "$RESULT_DIR" ]
+# then
+#    echo "$RESULT_DIR is already exist. New directory is required. "
+#    exit 1
+# fi
+
+# mkdir $RESULT_DIR
+
+# check RESULT_DIR is successfully made or not
+# if [ ! -d "$RESULT_DIR" ]
+# then
+#    echo "Can't create $RESULT_DIR. The directory name might not legal."
+#    exit 1
+# fi
+
+
+
+
+
+echo "INFILE 1 is $INFILE_1";
+echo "INFILE 2 is $INFILE_2";
+echo "RESULT_DIR is $RESULT_DIR";
+echo "FILENAME is $FILENAME";
+
+# check RESULT_DIR is exist or not
+if [ -d "$RESULT_DIR" ]
+then
+   echo "The directory is already exist."
+else
+     echo "The directory is new."
+fi
+
+
+

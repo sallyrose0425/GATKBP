@@ -1,0 +1,360 @@
+#!/bin/bash
+# This is a shell script to do the whole pipeline of GATK best practices analysis.
+# The data to be processed is the paired end WGS data from Illumina
+
+# Usage: ./gatk-pipeline PARAMETER_FILE
+
+
+#check the argument
+if [ $# -eq 0 ]
+then
+   echo "Usage: $0 parameter_file "
+   exit 1
+fi
+
+#check the parameter file exists or not
+if [ ! -f $1 ]
+then
+   echo "$1 doesn't exist. "
+   exit 1
+fi
+
+
+
+INFILE_1="";
+INFILE_2="";
+RESULT_DIR="";
+FILENAME="";
+
+#read parameters from file
+while read LINE; do
+    FIRST_CHAR=${LINE:0:1}
+    if [ ! $FIRST_CHAR == "#" ]
+    then
+       VARNAME=${LINE%=*}
+
+       case "$VARNAME" in
+          "INFILE_1")
+          INFILE_1=${LINE##*=}
+          ;;
+          "INFILE_2")
+          INFILE_2=${LINE##*=}
+          ;;
+          "RESULT_DIR")
+          RESULT_DIR=${LINE##*=}
+          ;;
+          "FILENAME")
+          FILENAME=${LINE##*=}
+          ;;
+       esac
+    fi
+done < $1
+
+# check FILENAME
+if [ "$FILENAME" == "" ]
+then
+   echo "FILENAME can't be empty "
+   exit 1
+fi
+
+# check RESULT_DIR exist or not
+if [ -d "$RESULT_DIR" ]
+then
+   echo "$RESULT_DIR is already exist. New directory is required. "
+   exit 1
+fi
+
+mkdir -p $RESULT_DIR
+
+# check RESULT_DIR is successfully made or not
+if [ ! -d "$RESULT_DIR" ]
+then
+   echo "Can't create $RESULT_DIR. The directory name might not legal."
+   exit 1
+fi
+
+
+
+# $PICARD is the shortcut of the path of picard.jar
+# $GATK is the shortcut of the path if GenomeAnalysisTK.jar
+# $VT is the shortcut of the path of vt/normalize tool
+# $VCFCOMPARATOR is the shotcut of the Useq/vcfcomparator
+# If those shortcuts are not set in the ~/.bash_profile file, it can set here
+# as a parameter using PICARD="path_of_picard.jar"
+
+
+
+# reference should be made by samtools faidx before first use
+# all the reference files are place in right location with right name
+ref="/home/xzh289/data/reference/b37/b37_bwa_index"
+ref_dir="/home/xzh289/data/reference/b37"
+
+# High confidence references
+NIST218="/home/xzh289/data/reference/NISTv2.18/shortname/NIST218_normalized.vcf"
+NIST218bed="/home/xzh289/data/reference/NISTv2.18/shortname/NIST218.bed"
+
+NIST219="/home/xzh289/data/reference/NISTv2.19/shortname/NIST219_normalized.vcf"
+NIST219bed="/home/xzh289/data/reference/NISTv2.19/shortname/NIST219.bed"
+
+PGv7="/home/xzh289/data/reference/IlluminaPlatinumGenomes_v7.0/NA12878/NA12878_normalized.vcf"
+PGbed="/home/xzh289/data/reference/IlluminaPlatinumGenomes_v7.0/NA12878/ConfidentRegions.bed"
+
+# Directorys used to store the comparison results
+
+useq_dir="${RESULT_DIR}/VCFcomparison/useq"
+
+# rtg_dir="/home/xzh289/data/results/test/ERP001960/vd-ug/para-test/test1/rtg"
+
+gatk_dir="${RESULT_DIR}/VCFcomparison/gatk"
+
+mkdir -p ${useq_dir}
+# mkdir -p ${rtg_dir}
+mkdir -p ${gatk_dir}
+
+
+tmp_dir="/home/xzh289/tmp"
+
+
+# Log file used to record the running time of each step
+log_file="${RESULT_DIR}/${FILENAME}_log.txt"
+
+echo "============================================================>" >> ${log_file}
+echo "Filename $FILENAME " >> ${log_file}
+
+# Align reads to reference sequence
+# Pay attention to the postfix of input file names
+
+
+echo "Mapping        ===========================================>" >> ${log_file}
+echo "Alignment (FASTQ to SAM) start:" >> ${log_file}
+date >> ${log_file}
+start_date=$(date +"%s")
+
+bwa mem -M -R "@RG\tID:${FILENAME}\tSM:${FILENAME}\tPL:ILLUMINA\tLB:UK\tPU:unit1" -t 16 $ref ${INFILE_1} ${INFILE_2} > ${RESULT_DIR}/${FILENAME}_aligned.sam
+
+end_date=$(date +"%s")
+echo "Alignment (FASTQ to SAM) end:" >> ${log_file}
+date >> ${log_file}
+time_cost=$((${end_date}-${start_date}))
+echo "$(($time_cost / 60)) minutes and $(($time_cost % 60)) seconds elapsed." >> ${log_file}
+
+echo "Mark duplicates===========================================>" >> ${log_file}
+# Sort the .sam file
+echo "Sort SAM to BAM start:" >> ${log_file}
+date >> ${log_file}
+start_date=$(date +"%s")
+
+java -Xmx64g -Djava.io.tmpdir=${tmp_dir} -jar $PICARD SortSam MAX_RECORDS_IN_RAM=2000000 INPUT=${RESULT_DIR}/${FILENAME}_aligned.sam OUTPUT=${RESULT_DIR}/${FILENAME}_sorted.bam SORT_ORDER=coordinate
+# $SAMBAMBA view -S -l 0 -f bam ${RESULT_DIR}/${FILENAME}_aligned.sam | $SAMBAMBA sort --tmpdir=${tmp_dir} -m 64GB -t 16 --out=${RESULT_DIR}/${FILENAME}_sorted.bam /dev/stdin
+
+end_date=$(date +"%s")
+echo "Sort SAM to BAM end:" >> ${log_file}
+date >> ${log_file}
+time_cost=$((${end_date}-${start_date}))
+echo "$(($time_cost / 60)) minutes and $(($time_cost % 60)) seconds elapsed." >> ${log_file}
+
+# Mark duplicates
+# May need set READ_NAME_REGEX here
+echo "MarkDuplicates start:" >> ${log_file}
+date >> ${log_file}
+start_date=$(date +"%s")
+
+java -Xmx64g -Djava.io.tmpdir=${tmp_dir} -jar $PICARD MarkDuplicates MAX_FILE_HANDLES_FOR_READ_ENDS_MAP=1000 INPUT=${RESULT_DIR}/${FILENAME}_sorted.bam OUTPUT=${RESULT_DIR}/${FILENAME}_dedup.bam METRICS_FILE=${RESULT_DIR}/${FILENAME}_metrics.txt
+
+# $SAMBAMBA markdup --tmpdir=${tmp_dir} -t 16 --overflow-list-size=400000 ${RESULT_DIR/${FILENAME}_sorted.bam ${RESULT_DIR}/${FILENAME}_dedup.bam
+
+end_date=$(date +"%s")
+echo "Markduplicates end:" >> ${log_file}
+date >> ${log_file}
+time_cost=$((${end_date}-${start_date}))
+echo "$(($time_cost / 60)) minutes and $(($time_cost % 60)) seconds elapsed." >> ${log_file}
+
+# Build the index of the .bam file
+echo "Build Bam Index start:" >> ${log_file}
+date >> ${log_file}
+start_date=$(date +"%s")
+
+java -Xmx64g -Djava.io.tmpdir=${tmp_dir} -jar $PICARD BuildBamIndex INPUT=${RESULT_DIR}/${FILENAME}_dedup.bam
+# $SAMBAMBA index -t 16 ${RESULT_DIR}/${FILENAME}_dedup.bam ${RESULT_DIR}/${FILENAME}_dedup.bai
+
+end_date=$(date +"%s")
+echo "BuildBamIndex end:" >> ${log_file}
+date >> ${log_file}
+time_cost=$((${end_date}-${start_date}))
+echo "$(($time_cost / 60)) minutes and $(($time_cost % 60)) seconds elapsed." >> ${log_file}
+
+
+echo "Local Realignment=========================================>" >> ${log_file}
+# Creat the target list for local realignment
+# Pay attention to the reference filename (-known reference)
+
+echo "Create target list start:" >> ${log_file}
+date >> ${log_file}
+start_date=$(date +"%s")
+
+java -Xmx64g -jar $GATK -T RealignerTargetCreator -nt 16 -R ${ref_dir}/human_g1k_v37.fasta -I ${RESULT_DIR}/${FILENAME}_dedup.bam -known ${ref_dir}/1000G_phase1.indels.b37.vcf -known ${ref_dir}/Mills_and_1000G_gold_standard.indels.b37.vcf -o ${RESULT_DIR}/${FILENAME}_target_intervals.list
+
+end_date=$(date +"%s")
+echo "Create target list end:" >> ${log_file}
+date >> ${log_file}
+time_cost=$((${end_date}-${start_date}))
+echo "$(($time_cost / 60)) minutes and $(($time_cost % 60)) seconds elapsed." >> ${log_file}
+
+# Local realignment, the reference file should be as the same as the target list# creation step (the previous step)
+echo "Local realignment start:" >> ${log_file}
+date >> ${log_file}
+start_date=$(date +"%s")
+
+java -Xmx64g -jar $GATK -T IndelRealigner -R ${ref_dir}/human_g1k_v37.fasta -I ${RESULT_DIR}/${FILENAME}_dedup.bam -known ${ref_dir}/1000G_phase1.indels.b37.vcf -known ${ref_dir}/Mills_and_1000G_gold_standard.indels.b37.vcf -targetIntervals ${RESULT_DIR}/${FILENAME}_target_intervals.list -o ${RESULT_DIR}/${FILENAME}_dedup_realigned.bam
+
+end_date=$(date +"%s")
+echo "Local realignment end:" >> ${log_file}
+date >> ${log_file}
+time_cost=$((${end_date}-${start_date}))
+echo "$(($time_cost / 60)) minutes and $(($time_cost % 60)) seconds elapsed." >> ${log_file}
+
+echo "BQSR           ===========================================>" >> ${log_file}
+# Build recalibration model
+# Pay attention to the refrence files (-knownsites reference)
+echo "Build recalibration model start:" >> ${log_file}
+date >> ${log_file}
+start_date=$(date +"%s")
+
+java -Xmx64g -jar $GATK -T BaseRecalibrator -nct 4 -R ${ref_dir}/human_g1k_v37.fasta -I ${RESULT_DIR}/${FILENAME}_dedup_realigned.bam -knownSites ${ref_dir}/1000G_phase1.indels.b37.vcf -knownSites ${ref_dir}/Mills_and_1000G_gold_standard.indels.b37.vcf -knownSites ${ref_dir}/dbsnp_137.b37.vcf -o ${RESULT_DIR}/${FILENAME}_recal_data.table
+
+end_date=$(date +"%s")
+echo "Build recalibration model end:" >> ${log_file}
+date >> ${log_file}
+time_cost=$((${end_date}-${start_date}))
+echo "$(($time_cost / 60)) minutes and $(($time_cost % 60)) seconds elapsed." >> ${log_file}
+
+# BQSR
+# Pay attention to the reference files ()
+echo "Recalibrate base quality score start:" >> ${log_file}
+date >> ${log_file}
+start_date=$(date +"%s")
+
+java -Xmx64g -jar $GATK -T PrintReads -nct 4 -R ${ref_dir}/human_g1k_v37.fasta -I ${RESULT_DIR}/${FILENAME}_dedup_realigned.bam -BQSR ${RESULT_DIR}/${FILENAME}_recal_data.table -o ${RESULT_DIR}/${FILENAME}_dedup_realigned_recal.bam
+
+end_date=$(date +"%s")
+echo "Recalibrate base quality score end:" >> ${log_file}
+date >> ${log_file}
+time_cost=$((${end_date}-${start_date}))
+echo "$(($time_cost / 60)) minutes and $(($time_cost % 60)) seconds elapsed." >> ${log_file}
+
+echo "Variant Calling===========================================>" >> ${log_file}
+# Using UnifiedGenotyper to call the variants
+echo "Variants calling start:" >> ${log_file}
+date >> ${log_file}
+start_date=$(date +"%s")
+
+java -Xmx64g -jar $GATK -T UnifiedGenotyper -nt 8 -R ${ref_dir}/human_g1k_v37.fasta -I ${RESULT_DIR}/${FILENAME}_dedup_realigned_recal.bam -glm BOTH -stand_call_conf 30 -stand_emit_conf 10 -o ${RESULT_DIR}/${FILENAME}_ug_variants.vcf
+
+end_date=$(date +"%s")
+echo "Variants calling end:" >> ${log_file}
+date >> ${log_file}
+time_cost=$((${end_date}-${start_date}))
+echo "$(($time_cost / 60)) minutes and $(($time_cost % 60)) seconds elapsed." >> ${log_file}
+
+echo "VQSR           ===========================================>" >> ${log_file}
+# VQSR
+echo "Build SNP recalibration model start:" >> ${log_file}
+date >> ${log_file}
+start_date=$(date +"%s")
+
+java -Xmx64g -jar $GATK -T VariantRecalibrator -R ${ref_dir}/human_g1k_v37.fasta -input ${RESULT_DIR}/${FILENAME}_ug_variants.vcf -resource:hapmap,known=false,training=true,truth=true,prior=15.0 ${ref_dir}/hapmap_3.3.b37.vcf -resource:omni,known=false,training=true,truth=false,prior=12.0 ${ref_dir}/1000G_omni2.5.b37.vcf -resource:1000G,known=false,training=true,truth=false,prior=10.0 ${ref_dir}/1000G_phase1.snps.high_confidence.b37.vcf -resource:dbsnp,known=true,training=false,truth=false,prior=2.0 ${ref_dir}/dbsnp_137.b37.vcf -an DP -an QD -an FS -an SOR -an MQ -an MQRankSum -an ReadPosRankSum -mode SNP -tranche 100.0 -tranche 99.9 -tranche 99.0 -tranche 95.0 -tranche 90.0 -recalFile ${RESULT_DIR}/${FILENAME}_SNP.recal -tranchesFile ${RESULT_DIR}/${FILENAME}_SNP.tranches -rscriptFile ${RESULT_DIR}/${FILENAME}_recalibrate_SNP_plots.R
+
+end_date=$(date +"%s")
+echo "Build SNP recalibration model end:" >> ${log_file}
+date >> ${log_file}
+time_cost=$((${end_date}-${start_date}))
+echo "$(($time_cost / 60)) minutes and $(($time_cost % 60)) seconds elapsed." >> ${log_file}
+
+echo "SNP recalibration start:" >> ${log_file}
+date >> ${log_file}
+start_date=$(date +"%s")
+
+java -Xmx64g -jar $GATK -T ApplyRecalibration -R ${ref_dir}/human_g1k_v37.fasta -input ${RESULT_DIR}/${FILENAME}_ug_variants.vcf -mode SNP --ts_filter_level 99.0 -recalFile ${RESULT_DIR}/${FILENAME}_SNP.recal -tranchesFile ${RESULT_DIR}/${FILENAME}_SNP.tranches -o ${RESULT_DIR}/${FILENAME}_ug_variants_recal_snp_raw_indels.vcf
+
+end_date=$(date +"%s")
+echo "SNP recalibration end:" >> ${log_file}
+date >> ${log_file}
+time_cost=$((${end_date}-${start_date}))
+echo "$(($time_cost / 60)) minutes and $(($time_cost % 60)) seconds elapsed." >> ${log_file}
+
+echo "Build INDEL recalibration model start:" >> ${log_file}
+date >> ${log_file}
+start_date=$(date +"%s")
+
+java -Xmx64g -jar $GATK -T VariantRecalibrator -R ${ref_dir}/human_g1k_v37.fasta -input ${RESULT_DIR}/${FILENAME}_ug_variants_recal_snp_raw_indels.vcf -resource:mills,known=false,training=true,truth=true,prior=12.0 ${ref_dir}/Mills_and_1000G_gold_standard.indels.b37.vcf -resource:dbsnp,known=true,training=false,truth=false,prior=2.0 ${ref_dir}/dbsnp_137.b37.vcf -an DP -an QD -an FS -an SOR -an MQ -an MQRankSum -an ReadPosRankSum -mode INDEL -tranche 100.0 -tranche 99.9 -tranche 99.0 -tranche 95.0 -tranche 90.0 --maxGaussians 4 -recalFile ${RESULT_DIR}/${FILENAME}_INDEL.recal -tranchesFile ${RESULT_DIR}/${FILENAME}_INDEL.tranches -rscriptFile ${RESULT_DIR}/${FILENAME}_recalibrate_INDEL_plots.R
+
+end_date=$(date +"%s")
+echo "Build INDEL recalibration model end:" >> ${log_file}
+date >> ${log_file}
+time_cost=$((${end_date}-${start_date}))
+echo "$(($time_cost / 60)) minutes and $(($time_cost % 60)) seconds elapsed." >> ${log_file}
+
+echo "INDEL recalibration start:" >> ${log_file}
+date >> ${log_file}
+start_date=$(date +"%s")
+
+java -Xmx64g -jar $GATK -T ApplyRecalibration -R ${ref_dir}/human_g1k_v37.fasta -input ${RESULT_DIR}/${FILENAME}_ug_variants_recal_snp_raw_indels.vcf -mode INDEL --ts_filter_level 99.0 -recalFile ${RESULT_DIR}/${FILENAME}_INDEL.recal -tranchesFile ${RESULT_DIR}/${FILENAME}_INDEL.tranches -o ${RESULT_DIR}/${FILENAME}_ug_variants_recal_snp_recal_indels.vcf
+
+end_date=$(date +"%s")
+echo "INDEL recalibration  end:" >> ${log_file}
+date >> ${log_file}
+time_cost=$((${end_date}-${start_date}))
+echo "$(($time_cost / 60)) minutes and $(($time_cost % 60)) seconds elapsed." >> ${log_file}
+
+echo "VT normalize   ==========================================>" >> ${log_file}
+# Using VT normalize to nomalize the vcf files
+echo "VT normalize start:" >> ${log_file}
+date >> ${log_file}
+
+start_date=$(date +"%s")
+
+$VT normalize ${RESULT_DIR}/${FILENAME}_ug_variants_recal_snp_recal_indels.vcf -r ${ref_dir}/human_g1k_v37.fasta -n -o ${RESULT_DIR}/${FILENAME}_ug_variants_recal_snp_recal_indels_normalized.vcf
+
+end_date=$(date +"%s")
+echo "VT normalize end:" >> ${log_file}
+date >> ${log_file}
+time_cost=$((${end_date}-${start_date}))
+echo "$(($time_cost / 60)) minutes and $(($time_cost % 60)) seconds elapsed." >> ${log_file}
+
+echo "Useq comparison===========================================>" >> ${log_file}
+# Using Useq-vcfcomparator to do the comparison
+echo "Useq compare start:" >> ${log_file}
+date >> ${log_file}
+start_date=$(date +"%s")
+
+java -Xmx32G -jar $VCFCOMPARATOR -a ${NIST218} -b ${NIST218bed} -c ${RESULT_DIR}/${FILENAME}_ug_variants_recal_snp_recal_indels_normalized.vcf -d ${NIST218bed} -p ${useq_dir}/test1-NIST218-UG
+java -Xmx32G -jar $VCFCOMPARATOR -a ${NIST219} -b ${NIST219bed} -c ${RESULT_DIR}/${FILENAME}_ug_variants_recal_snp_recal_indels_normalized.vcf -d ${NIST219bed} -p ${useq_dir}/test1-VS-NIST219-UG
+java -Xmx32G -jar $VCFCOMPARATOR -a ${PGv7} -b ${PGbed} -c ${RESULT_DIR}/${FILENAME}_ug_variants_recal_snp_recal_indels_normalized.vcf -d ${PGbed} -p ${useq_dir}/test1-VS-PGv7-UG
+
+end_date=$(date +"%s")
+echo "Useq compare end:" >> ${log_file}
+date >> ${log_file}
+time_cost=$((${end_date}-${start_date}))
+echo "$(($time_cost / 60)) minutes and $(($time_cost % 60)) seconds elapsed." >> ${log_file}
+
+echo "GATK comparison===========================================>" >> ${log_file}
+# Using GATK VariantEval to do the comparison
+echo "GATK variantEval start:" >> ${log_file}
+date >> ${log_file}
+start_date=$(date +"%s")
+
+java -Xmx64g -jar $GATK -T VariantEval -R ${ref_dir}/human_g1k_v37.fasta --comp ${NIST218} -o ${gatk_dir}/${FILENAME}_ug_test1_vsNIST218_eval.grp --eval:${FILENAME} ${RESULT_DIR}/${FILENAME}_ug_variants_recal_snp_recal_indels_normalized.vcf
+
+java -Xmx64g -jar $GATK -T VariantEval -R ${ref_dir}/human_g1k_v37.fasta --comp ${NIST219} -o ${gatk_dir}/${FILENAME}_ug_test1_vsNIST219_eval.grp --eval:${FILENAME} ${RESULT_DIR}/${FILENAME}_ug_variants_recal_snp_recal_indels_normalized.vcf
+
+java -Xmx64g -jar $GATK -T VariantEval -R ${ref_dir}/human_g1k_v37.fasta --comp ${PGv7} -o ${gatk_dir}/${FILENAME}_ug_test1_vsPGv07_eval.grp --eval:${FILENAME} ${RESULT_DIR}/${FILENAME}_ug_variants_recal_snp_recal_indels_normalized.vcf
+
+end_date=$(date +"%s")
+echo "GATK variantEval end:" >> ${log_file}
+date >> ${log_file}
+time_cost=$((${end_date}-${start_date}))
+echo "$(($time_cost / 60)) minutes and $(($time_cost % 60)) seconds elapsed." >> ${log_file}
+
+echo "Finish!!!" >> ${log_file}
+echo "==========================================================>" >> ${log_file}
+

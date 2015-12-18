@@ -1,0 +1,21 @@
+# para1.txt
+# Sample parameter file
+# Comment starts with '#'
+# '=' is the delimeter used to seperate the variable name and value
+# Make sure that there is no '=' in the file names and paths
+# Reference files and paths of tools were set in the file "gatk-pipeline"
+# If needed, these files and paths can be changed in "gatk-pipeline"
+
+# 'INFILE_1' and 'INFILE_2' are the pair ended fastq files. Specify the
+# whole path and name of the file like: 
+# INFILE_1=/PATH_TO_INFILE_1/filename.fastq
+# FILENAME is the special tag used to name the result file and the read
+# group information. It can't be empty.
+# 'RESULT_DIR' is the directory which used to store the result files
+# Make sure that RESULT_DIR is a new directory.
+
+
+INFILE_1=/home/xzh289/data/raw/ERP001229/ERR091571_1.fastq.gz
+INFILE_2=/home/xzh289/data/raw/ERP001229/ERR091571_2.fastq.gz
+RESULT_DIR=/home/xzh289/data/results/test5/ERP001229/test1
+FILENAME=ERR091571
